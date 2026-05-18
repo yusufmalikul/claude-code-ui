@@ -4,12 +4,16 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { spawnClaude } from './claude-adapter.js';
+import { openDb } from './db.js';
+import { SessionManager } from './session-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3001);
 const HARDCODED_CWD = process.env.CLAUDE_CWD || process.cwd();
 
 const app = Fastify({ logger: { level: 'info' } });
+const db = openDb();
+const sessions = new SessionManager(db);
 
 await app.register(fastifyStatic, {
   root: path.join(__dirname, 'public'),
@@ -19,46 +23,30 @@ await app.register(fastifyWebsocket);
 
 app.get('/health', async () => ({ ok: true }));
 
-// Step 2: keep POST /echo around as a sanity endpoint.
-app.post('/echo', async (req, reply) => {
-  const { prompt, cwd } = req.body ?? {};
-  if (typeof prompt !== 'string' || !prompt.trim()) {
-    return reply.code(400).send({ error: 'prompt required' });
-  }
-  reply.raw.writeHead(200, {
-    'Content-Type': 'text/plain; charset=utf-8',
-    'Transfer-Encoding': 'chunked',
-    'X-Accel-Buffering': 'no',
-  });
-  const run = spawnClaude({
-    message: prompt,
-    cwd: cwd || HARDCODED_CWD,
-    skipPerms: true,
-    onToken: (t) => reply.raw.write(t),
-    onSession: (id) => reply.raw.write(`\n[session:${id}]\n`),
-  });
-  try {
-    const result = await run.done;
-    reply.raw.write(`\n[done sessionId=${result.sessionId}]\n`);
-  } catch (err) {
-    reply.raw.write(`\n[error] ${err.message}\n`);
-  }
-  reply.raw.end();
-});
+app.get('/api/sessions', async () => sessions.list());
+app.get('/api/sessions/:id/messages', async (req) => sessions.messages(Number(req.params.id)));
 
-// One in-memory session for step 2. Replaced by SessionManager in step 3.
-const hardcodedSession = {
-  id: 'main',
-  cwd: HARDCODED_CWD,
-  claudeId: null,        // captured from claude on first turn (used by --resume in step 3)
-  running: null,         // active spawnClaude handle, or null
-};
+// Default session for step 3 — one row, reused across restarts.
+const defaultSession = sessions.getOrCreateDefault({ cwd: HARDCODED_CWD });
+app.log.info({ sessionId: defaultSession.id, claudeId: defaultSession.claude_id }, 'default session');
+
+// Tracks the active spawnClaude handle per DB session id, so we can refuse
+// overlapping turns and (later) cancel.
+const running = new Map();
 
 app.register(async (scoped) => {
-  scoped.get('/ws', { websocket: true }, (socket /*, req */) => {
+  scoped.get('/ws', { websocket: true }, (socket) => {
     const send = (obj) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
     };
+
+    // Hydrate the client with current session + history.
+    send({ type: 'session_list', sessions: sessions.list() });
+    send({
+      type: 'history',
+      sessionId: defaultSession.id,
+      messages: sessions.messages(defaultSession.id),
+    });
 
     socket.on('message', (raw) => {
       let msg;
@@ -68,38 +56,61 @@ app.register(async (scoped) => {
       if (msg.type === 'send_message') {
         handleSendMessage(msg, send);
       } else if (msg.type === 'cancel') {
-        hardcodedSession.running?.cancel();
+        running.get(defaultSession.id)?.cancel();
       }
     });
-
-    socket.on('close', () => { /* future: cleanup per-socket pending work */ });
   });
 });
 
 function handleSendMessage(msg, send) {
-  if (hardcodedSession.running) {
+  const sessionId = defaultSession.id;
+  if (running.has(sessionId)) {
     return send({ type: 'state', state: 'error', error: 'session is busy' });
   }
   const text = typeof msg.text === 'string' ? msg.text.trim() : '';
   if (!text) return send({ type: 'state', state: 'error', error: 'empty message' });
 
+  // Always re-read so we pick up claude_id captured on a previous turn.
+  const sess = sessions.get(sessionId);
+  sessions.addMessage(sessionId, 'user', { text });
+
+  let assistantBuffer = '';
+  const toolCalls = [];
+
   const run = spawnClaude({
     message: text,
-    cwd: hardcodedSession.cwd,
+    cwd: sess.cwd,
+    resumeId: sess.claude_id || undefined,
     skipPerms: true,
     onSession: (id) => {
-      hardcodedSession.claudeId = id;
+      // First-turn capture, or when claude rotates the session id mid-conversation.
+      if (id && id !== sess.claude_id) {
+        sessions.setClaudeId(sessionId, id);
+        sess.claude_id = id;
+      }
       send({ type: 'session', sessionId: id });
     },
     onState: (state) => send({ type: 'state', state }),
-    onToken: (t) => send({ type: 'token', text: t }),
-    onTool: (t) => send({ type: 'tool_start', toolUseId: t.id, name: t.name, input: t.input }),
+    onToken: (t) => {
+      assistantBuffer += t;
+      send({ type: 'token', text: t });
+    },
+    onTool: (t) => {
+      toolCalls.push({ id: t.id, name: t.name, input: t.input });
+      send({ type: 'tool_start', toolUseId: t.id, name: t.name, input: t.input });
+    },
   });
-  hardcodedSession.running = run;
+  running.set(sessionId, run);
 
   run.done
+    .then(() => {
+      sessions.addMessage(sessionId, 'assistant', {
+        text: assistantBuffer,
+        tool_calls: toolCalls,
+      });
+    })
     .catch((err) => send({ type: 'state', state: 'error', error: err.message }))
-    .finally(() => { hardcodedSession.running = null; });
+    .finally(() => { running.delete(sessionId); });
 }
 
 app.listen({ port: PORT, host: '0.0.0.0' })

@@ -66,6 +66,25 @@ function connect() {
 
 function handleEvent(evt) {
   switch (evt.type) {
+    case 'history': {
+      log.innerHTML = '';
+      assistantMsgEl = null;
+      for (const m of evt.messages) {
+        if (m.role === 'user') {
+          appendMessage('user', m.content?.text ?? '');
+        } else if (m.role === 'assistant') {
+          appendMessage('assistant', m.content?.text ?? '');
+          for (const tc of m.content?.tool_calls ?? []) {
+            appendMessage('tool', `→ ${tc.name}(${JSON.stringify(tc.input)})`);
+          }
+        }
+      }
+      break;
+    }
+    case 'session_list': {
+      // Step 4 wires this to a sidebar. For now, ignore.
+      break;
+    }
     case 'token': {
       const el = ensureAssistantBubble();
       el.querySelector('.body').textContent += evt.text;
