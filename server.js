@@ -31,6 +31,16 @@ app.post('/api/sessions', async (req, reply) => {
   return sessions.create({ title: title.trim(), cwd: (cwd || DEFAULT_CWD).trim() });
 });
 
+app.patch('/api/sessions/:id', async (req, reply) => {
+  const id = Number(req.params.id);
+  const { title } = req.body ?? {};
+  if (typeof title !== 'string' || !title.trim()) return reply.code(400).send({ error: 'title required' });
+  if (!sessions.get(id)) return reply.code(404).send({ error: 'not found' });
+  const updated = sessions.rename(id, title.trim());
+  broadcastSessionList();
+  return updated;
+});
+
 app.delete('/api/sessions/:id', async (req) => {
   const id = Number(req.params.id);
   running.get(id)?.cancel();

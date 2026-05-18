@@ -61,6 +61,25 @@ body { display: flex; height: 100vh; }
 .session-item:hover { background: var(--hover); }
 .session-item.active { background: var(--active); }
 .session-item .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-item .menu-btn {
+  margin-left: auto; opacity: 0; transition: opacity 0.1s;
+  background: transparent; border: 0; cursor: pointer; color: var(--muted);
+  padding: 0 0.3rem; font-size: 1rem; line-height: 1;
+}
+.session-item:hover .menu-btn { opacity: 1; }
+.session-item .menu-btn:hover { color: var(--fg); }
+.session-menu {
+  position: absolute; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.25rem; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  min-width: 8rem; z-index: 10;
+}
+.session-menu button {
+  display: block; width: 100%; padding: 0.4rem 0.6rem; border: 0;
+  background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+  font: inherit; border-radius: 4px;
+}
+.session-menu button:hover { background: var(--hover); }
+.session-menu button.danger { color: #c92a2a; }
 .session-item .dot {
   width: 8px; height: 8px; border-radius: 50%; background: transparent; flex-shrink: 0;
 }
@@ -73,6 +92,12 @@ header {
   display: flex; align-items: center; gap: 0.75rem;
 }
 header h1 { font-size: 1rem; margin: 0; font-weight: 600; }
+.icon-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--fg);
+  padding: 0.2rem 0.55rem; border-radius: 4px; font-size: 0.8rem; cursor: pointer;
+}
+.icon-btn:hover { background: var(--hover); }
+#stop-btn { color: #c92a2a; border-color: #c92a2a; }
 .status { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
 .status.connected { color: #2b8a3e; }
 .status.disconnected { color: #c92a2a; }

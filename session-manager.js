@@ -18,6 +18,7 @@ export class SessionManager {
         `SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC`
       ),
       deleteSession: db.prepare(`DELETE FROM sessions WHERE id = ?`),
+      renameSession: db.prepare(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`),
     };
   }
 
@@ -57,6 +58,11 @@ export class SessionManager {
   }
 
   delete(id) { this.stmts.deleteSession.run(id); }
+
+  rename(id, title) {
+    this.stmts.renameSession.run(title, Date.now(), id);
+    return this.get(id);
+  }
 }
 
 function tryParse(s) {

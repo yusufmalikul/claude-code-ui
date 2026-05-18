@@ -42,6 +42,7 @@ const statusEl = document.getElementById('status');
 const sessionListEl = document.getElementById('session-list');
 const sessionTitleEl = document.getElementById('session-title');
 const newSessionBtn = document.getElementById('new-session-btn');
+const stopBtn = document.getElementById('stop-btn');
 
 let ws;
 let sessions = [];        // server-provided list, ordered by updated_at desc
@@ -72,10 +73,59 @@ function renderSessionList() {
     li.dataset.id = s.id;
     const dot = document.createElement('span'); dot.className = 'dot';
     const title = document.createElement('span'); title.className = 'title'; title.textContent = s.title;
-    li.appendChild(dot); li.appendChild(title);
+    const menuBtn = document.createElement('button');
+    menuBtn.className = 'menu-btn'; menuBtn.textContent = '⋯'; menuBtn.title = 'Session options';
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSessionMenu(s, menuBtn);
+    });
+    li.appendChild(dot); li.appendChild(title); li.appendChild(menuBtn);
     li.addEventListener('click', () => selectSession(s.id));
     sessionListEl.appendChild(li);
   }
+}
+
+let openMenu = null;
+function closeOpenMenu() { openMenu?.remove(); openMenu = null; }
+document.addEventListener('click', closeOpenMenu);
+
+function openSessionMenu(session, anchor) {
+  closeOpenMenu();
+  const menu = document.createElement('div');
+  menu.className = 'session-menu';
+  const rect = anchor.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.left = `${rect.left}px`;
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = 'Rename';
+  renameBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    closeOpenMenu();
+    const next = prompt('Rename session:', session.title);
+    if (!next || next.trim() === session.title) return;
+    await fetch(`/api/sessions/${session.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: next.trim() }),
+    });
+  });
+  const deleteBtn = document.createElement('button');
+  deleteBtn.textContent = 'Delete'; deleteBtn.className = 'danger';
+  deleteBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    closeOpenMenu();
+    if (!confirm(`Delete "${session.title}"? This removes all messages.`)) return;
+    await fetch(`/api/sessions/${session.id}`, { method: 'DELETE' });
+    if (activeSessionId === session.id) {
+      activeSessionId = null;
+      sessionState.delete(session.id);
+      sessionTitleEl.textContent = '…';
+      logEl.innerHTML = '';
+    }
+  });
+  menu.append(renameBtn, deleteBtn);
+  document.body.appendChild(menu);
+  openMenu = menu;
 }
 
 function renderLog() {
@@ -194,8 +244,14 @@ function selectSession(id) {
   sessionTitleEl.textContent = s ? s.title : '…';
   renderSessionList();
   renderLog();
+  updateStopButton();
   // Ask the server for fresh history (covers reconnect cases).
   ws?.send?.(JSON.stringify({ type: 'load_session', sessionId: id }));
+}
+
+function updateStopButton() {
+  const streaming = activeSessionId != null && getState(activeSessionId).streaming;
+  stopBtn.hidden = !streaming;
 }
 
 function connect() {
@@ -306,6 +362,7 @@ function handleEvent(evt) {
         state.streaming = true;
       }
       if (prev !== state.streaming) renderSessionList();
+      if (evt.sessionId === activeSessionId) updateStopButton();
       if (evt.state === 'error' && evt.sessionId === activeSessionId) {
         appendBubble('system', `error: ${evt.error || 'unknown'}`);
       }
@@ -339,6 +396,11 @@ input.addEventListener('keydown', (e) => {
     e.preventDefault();
     form.requestSubmit();
   }
+});
+
+stopBtn.addEventListener('click', () => {
+  if (activeSessionId == null) return;
+  ws?.send?.(JSON.stringify({ type: 'cancel', sessionId: activeSessionId }));
 });
 
 newSessionBtn.addEventListener('click', () => {
