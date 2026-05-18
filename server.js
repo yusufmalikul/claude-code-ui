@@ -126,9 +126,12 @@ function handleSendMessage(msg, send) {
     return send({ type: 'state', sessionId, state: 'error', error: 'session is busy' });
   }
   const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-  if (!text) return send({ type: 'state', sessionId, state: 'error', error: 'empty message' });
+  const images = Array.isArray(msg.images) ? msg.images.filter((i) => i && typeof i.data === 'string') : [];
+  if (!text && images.length === 0) {
+    return send({ type: 'state', sessionId, state: 'error', error: 'empty message' });
+  }
 
-  sessions.addMessage(sessionId, 'user', { text });
+  sessions.addMessage(sessionId, 'user', { text, images: images.map((i) => ({ mediaType: i.mediaType })) });
   // Notify everyone the session got touched so sidebars re-order.
   broadcastSessionList();
 
@@ -138,6 +141,7 @@ function handleSendMessage(msg, send) {
 
   const run = spawnClaude({
     message: text,
+    images,
     cwd: sess.cwd,
     resumeId: sess.claude_id || undefined,
     skipPerms: true,

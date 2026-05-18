@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
  *
  * options:
  *   message:    string                user prompt for this turn
+ *   images?:    Array<{mediaType, data}>  base64 image attachments (data URL or raw base64)
  *   cwd:        string                working directory for claude
  *   resumeId?:  string                pass to --resume for context continuity
  *   skipPerms?: boolean               temporary; remove once MCP gate lands
@@ -22,6 +23,7 @@ import { spawn } from 'node:child_process';
 export function spawnClaude(options) {
   const {
     message,
+    images,
     cwd,
     resumeId,
     skipPerms = false,
@@ -144,12 +146,23 @@ export function spawnClaude(options) {
   });
 
   // Stream-json input: one JSON line, then close stdin (plan line 223).
+  const content = [];
+  for (const img of images ?? []) {
+    if (!img?.data) continue;
+    // Accept either raw base64 or a data URL; normalize to {mediaType, data}.
+    let mediaType = img.mediaType || 'image/png';
+    let data = img.data;
+    const m = /^data:([^;]+);base64,(.+)$/i.exec(data);
+    if (m) { mediaType = m[1]; data = m[2]; }
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType, data },
+    });
+  }
+  content.push({ type: 'text', text: message });
   const inputMessage = {
     type: 'user',
-    message: {
-      role: 'user',
-      content: [{ type: 'text', text: message }],
-    },
+    message: { role: 'user', content },
   };
   child.stdin.write(JSON.stringify(inputMessage) + '\n');
   child.stdin.end();

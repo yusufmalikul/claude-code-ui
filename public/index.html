@@ -29,7 +29,10 @@
     <main id="log" aria-live="polite"></main>
 
     <form id="composer">
-      <textarea id="input" rows="3" placeholder="Message… (Cmd/Ctrl+Enter to send)" autofocus></textarea>
+      <div class="composer-stack">
+        <div id="attachments" class="attachments" hidden></div>
+        <textarea id="input" rows="3" placeholder="Message… (Cmd/Ctrl+Enter to send, paste images to attach)" autofocus></textarea>
+      </div>
       <button type="submit">Send</button>
     </form>
   </section>

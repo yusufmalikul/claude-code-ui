@@ -43,6 +43,10 @@ const sessionListEl = document.getElementById('session-list');
 const sessionTitleEl = document.getElementById('session-title');
 const newSessionBtn = document.getElementById('new-session-btn');
 const stopBtn = document.getElementById('stop-btn');
+const attachmentsEl = document.getElementById('attachments');
+
+// Pending image attachments for the next send. Each: { id, dataUrl, mediaType }
+const pendingAttachments = [];
 
 let ws;
 let sessions = [];        // server-provided list, ordered by updated_at desc
@@ -378,17 +382,61 @@ function handleEvent(evt) {
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   const text = input.value.trim();
-  if (!text || ws?.readyState !== WebSocket.OPEN || activeSessionId == null) return;
+  const hasImages = pendingAttachments.length > 0;
+  if ((!text && !hasImages) || ws?.readyState !== WebSocket.OPEN || activeSessionId == null) return;
 
   const state = getState(activeSessionId);
-  const userMsg = { id: `live-u-${Date.now()}`, role: 'user', text, tool_calls: [], streaming: false };
+  const displayText = (hasImages ? `[${pendingAttachments.length} image${pendingAttachments.length > 1 ? 's' : ''}]\n` : '') + text;
+  const userMsg = { id: `live-u-${Date.now()}`, role: 'user', text: displayText, tool_calls: [], streaming: false };
   state.messages.push(userMsg);
-  appendBubble('user', text);
+  appendBubble('user', displayText);
   logEl.scrollTop = logEl.scrollHeight;
 
-  ws.send(JSON.stringify({ type: 'send_message', sessionId: activeSessionId, text }));
+  const images = pendingAttachments.map((a) => ({ data: a.dataUrl, mediaType: a.mediaType }));
+  ws.send(JSON.stringify({ type: 'send_message', sessionId: activeSessionId, text, images }));
   input.value = '';
+  pendingAttachments.length = 0;
+  renderAttachments();
   sendBtn.disabled = true;
+});
+
+function renderAttachments() {
+  attachmentsEl.innerHTML = '';
+  attachmentsEl.hidden = pendingAttachments.length === 0;
+  for (const att of pendingAttachments) {
+    const chip = document.createElement('div'); chip.className = 'attachment';
+    const img = document.createElement('img'); img.src = att.dataUrl; img.alt = att.mediaType;
+    const rm = document.createElement('button'); rm.textContent = '×'; rm.title = 'Remove';
+    rm.addEventListener('click', (e) => {
+      e.preventDefault();
+      const i = pendingAttachments.indexOf(att);
+      if (i !== -1) pendingAttachments.splice(i, 1);
+      renderAttachments();
+    });
+    chip.append(img, rm);
+    attachmentsEl.appendChild(chip);
+  }
+}
+
+input.addEventListener('paste', (e) => {
+  const items = Array.from(e.clipboardData?.items ?? []);
+  const images = items.filter((it) => it.type?.startsWith('image/'));
+  if (images.length === 0) return;
+  e.preventDefault();
+  for (const it of images) {
+    const file = it.getAsFile();
+    if (!file) continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingAttachments.push({
+        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        dataUrl: reader.result,
+        mediaType: file.type || 'image/png',
+      });
+      renderAttachments();
+    };
+    reader.readAsDataURL(file);
+  }
 });
 
 input.addEventListener('keydown', (e) => {
