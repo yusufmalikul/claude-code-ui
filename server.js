@@ -9,7 +9,7 @@ import { SessionManager } from './session-manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3001);
-const HARDCODED_CWD = process.env.CLAUDE_CWD || process.cwd();
+const DEFAULT_CWD = process.env.CLAUDE_CWD || process.cwd();
 
 const app = Fastify({ logger: { level: 'info' } });
 const db = openDb();
@@ -22,57 +22,105 @@ await app.register(fastifyStatic, {
 await app.register(fastifyWebsocket);
 
 app.get('/health', async () => ({ ok: true }));
-
 app.get('/api/sessions', async () => sessions.list());
 app.get('/api/sessions/:id/messages', async (req) => sessions.messages(Number(req.params.id)));
 
-// Default session for step 3 — one row, reused across restarts.
-const defaultSession = sessions.getOrCreateDefault({ cwd: HARDCODED_CWD });
-app.log.info({ sessionId: defaultSession.id, claudeId: defaultSession.claude_id }, 'default session');
+app.post('/api/sessions', async (req, reply) => {
+  const { title, cwd } = req.body ?? {};
+  if (typeof title !== 'string' || !title.trim()) return reply.code(400).send({ error: 'title required' });
+  return sessions.create({ title: title.trim(), cwd: (cwd || DEFAULT_CWD).trim() });
+});
 
-// Tracks the active spawnClaude handle per DB session id, so we can refuse
-// overlapping turns and (later) cancel.
+app.delete('/api/sessions/:id', async (req) => {
+  const id = Number(req.params.id);
+  running.get(id)?.cancel();
+  running.delete(id);
+  sessions.delete(id);
+  broadcastSessionList();
+  return { ok: true };
+});
+
+// Ensure at least one session exists so first-time users have something to land on.
+if (sessions.list().length === 0) {
+  sessions.create({ title: 'main', cwd: DEFAULT_CWD });
+}
+
+// Active runs keyed by session id. Multiple sessions may stream concurrently.
 const running = new Map();
+// Connected websocket clients; used to fan out events.
+const clients = new Set();
+
+function broadcast(obj) {
+  const json = JSON.stringify(obj);
+  for (const c of clients) {
+    if (c.readyState === c.OPEN) c.send(json);
+  }
+}
+
+function broadcastSessionList() {
+  broadcast({ type: 'session_list', sessions: sessions.list() });
+}
 
 app.register(async (scoped) => {
   scoped.get('/ws', { websocket: true }, (socket) => {
+    clients.add(socket);
+
     const send = (obj) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(obj));
     };
 
-    // Hydrate the client with current session + history.
     send({ type: 'session_list', sessions: sessions.list() });
-    send({
-      type: 'history',
-      sessionId: defaultSession.id,
-      messages: sessions.messages(defaultSession.id),
-    });
 
     socket.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString('utf8')); }
       catch { return send({ type: 'state', state: 'error', error: 'bad json' }); }
 
-      if (msg.type === 'send_message') {
-        handleSendMessage(msg, send);
-      } else if (msg.type === 'cancel') {
-        running.get(defaultSession.id)?.cancel();
+      switch (msg.type) {
+        case 'send_message': return handleSendMessage(msg, send);
+        case 'new_session':  return handleNewSession(msg, send);
+        case 'load_session': return handleLoadSession(msg, send);
+        case 'cancel': {
+          const sid = Number(msg.sessionId);
+          running.get(sid)?.cancel();
+          return;
+        }
       }
     });
+
+    socket.on('close', () => clients.delete(socket));
   });
 });
 
+function handleNewSession(msg, send) {
+  const title = (msg.title || 'untitled').toString().trim() || 'untitled';
+  const cwd = (msg.cwd || DEFAULT_CWD).toString().trim() || DEFAULT_CWD;
+  const sess = sessions.create({ title, cwd });
+  broadcastSessionList();
+  send({ type: 'session_created', session: sess });
+  send({ type: 'history', sessionId: sess.id, messages: [] });
+}
+
+function handleLoadSession(msg, send) {
+  const id = Number(msg.sessionId);
+  const sess = sessions.get(id);
+  if (!sess) return send({ type: 'state', state: 'error', error: 'session not found' });
+  send({ type: 'history', sessionId: id, messages: sessions.messages(id) });
+}
+
 function handleSendMessage(msg, send) {
-  const sessionId = defaultSession.id;
+  const sessionId = Number(msg.sessionId);
+  const sess = sessions.get(sessionId);
+  if (!sess) return send({ type: 'state', sessionId, state: 'error', error: 'session not found' });
   if (running.has(sessionId)) {
-    return send({ type: 'state', state: 'error', error: 'session is busy' });
+    return send({ type: 'state', sessionId, state: 'error', error: 'session is busy' });
   }
   const text = typeof msg.text === 'string' ? msg.text.trim() : '';
-  if (!text) return send({ type: 'state', state: 'error', error: 'empty message' });
+  if (!text) return send({ type: 'state', sessionId, state: 'error', error: 'empty message' });
 
-  // Always re-read so we pick up claude_id captured on a previous turn.
-  const sess = sessions.get(sessionId);
   sessions.addMessage(sessionId, 'user', { text });
+  // Notify everyone the session got touched so sidebars re-order.
+  broadcastSessionList();
 
   let assistantBuffer = '';
   const toolCalls = [];
@@ -83,33 +131,30 @@ function handleSendMessage(msg, send) {
     resumeId: sess.claude_id || undefined,
     skipPerms: true,
     onSession: (id) => {
-      // First-turn capture, or when claude rotates the session id mid-conversation.
       if (id && id !== sess.claude_id) {
         sessions.setClaudeId(sessionId, id);
         sess.claude_id = id;
       }
-      send({ type: 'session', sessionId: id });
+      broadcast({ type: 'session', sessionId, claudeId: id });
     },
-    onState: (state) => send({ type: 'state', state }),
+    onState: (state) => broadcast({ type: 'state', sessionId, state }),
     onToken: (t) => {
       assistantBuffer += t;
-      send({ type: 'token', text: t });
+      broadcast({ type: 'token', sessionId, text: t });
     },
     onTool: (t) => {
       toolCalls.push({ id: t.id, name: t.name, input: t.input });
-      send({ type: 'tool_start', toolUseId: t.id, name: t.name, input: t.input });
+      broadcast({ type: 'tool_start', sessionId, toolUseId: t.id, name: t.name, input: t.input });
     },
   });
   running.set(sessionId, run);
 
   run.done
     .then(() => {
-      sessions.addMessage(sessionId, 'assistant', {
-        text: assistantBuffer,
-        tool_calls: toolCalls,
-      });
+      sessions.addMessage(sessionId, 'assistant', { text: assistantBuffer, tool_calls: toolCalls });
+      broadcastSessionList();
     })
-    .catch((err) => send({ type: 'state', state: 'error', error: err.message }))
+    .catch((err) => broadcast({ type: 'state', sessionId, state: 'error', error: err.message }))
     .finally(() => { running.delete(sessionId); });
 }
 
