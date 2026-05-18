@@ -19,7 +19,33 @@ export class SessionManager {
       ),
       deleteSession: db.prepare(`DELETE FROM sessions WHERE id = ?`),
       renameSession: db.prepare(`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`),
+      findByClaudeId: db.prepare(`SELECT * FROM sessions WHERE claude_id = ?`),
+      insertSessionFull: db.prepare(
+        `INSERT INTO sessions (title, cwd, claude_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
+      ),
     };
+  }
+
+  findByClaudeId(claudeId) {
+    return this.stmts.findByClaudeId.get(claudeId);
+  }
+
+  // Bulk insert an imported transcript inside a single transaction so we don't
+  // end up with a half-imported session if any row fails.
+  importSession({ title, cwd, claudeId, messages, createdAt }) {
+    const now = Date.now();
+    const ts = createdAt ?? now;
+    const tx = this.db.transaction(() => {
+      const info = this.stmts.insertSessionFull.run(title, cwd, claudeId, ts, ts);
+      const sid = info.lastInsertRowid;
+      for (const m of messages) {
+        const payload = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+        this.stmts.insertMessage.run(sid, m.role, payload, ts);
+      }
+      return sid;
+    });
+    const id = tx();
+    return this.get(id);
   }
 
   create({ title, cwd }) {

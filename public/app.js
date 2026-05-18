@@ -51,6 +51,7 @@ const pendingAttachments = [];
 let ws;
 let sessions = [];        // server-provided list, ordered by updated_at desc
 let activeSessionId = null;
+let toolsCollapsed = false;
 
 // Per-session UI state kept in memory so we can swap views fast.
 // { logHtml: string, streaming: bool, openAssistantId: string|null }
@@ -138,11 +139,67 @@ function renderLog() {
   const state = getState(activeSessionId);
   for (const m of state.messages) {
     appendBubble(m.role, m.text, m.streaming, m.id);
-    for (const tc of m.tool_calls ?? []) {
-      appendToolBubble(tc);
+    const toolCalls = m.tool_calls ?? [];
+    if (toolCalls.length) {
+      const group = startToolGroup();
+      for (const tc of toolCalls) appendToolBubble(tc, group);
+      finalizeToolGroup(group);
     }
   }
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+// A "tool group" wraps consecutive tool calls into one collapsible <details>
+// so a long batch doesn't dominate the view. We grab the group via the last
+// child of logEl while it's still the open group.
+function startToolGroup() {
+  const wrap = document.createElement('div');
+  wrap.className = 'msg tool-group';
+  const details = document.createElement('details');
+  details.open = !toolsCollapsed;
+  const summary = document.createElement('summary');
+  summary.className = 'tool-group-summary';
+  const label = document.createElement('span');
+  label.className = 'tool-group-label';
+  const names = document.createElement('span');
+  names.className = 'tool-group-names';
+  summary.append(label, names);
+  details.appendChild(summary);
+  const body = document.createElement('div');
+  body.className = 'tool-group-body';
+  details.appendChild(body);
+  wrap.appendChild(details);
+  logEl.appendChild(wrap);
+  updateToolGroupSummary(wrap);
+  return wrap;
+}
+
+function getOrStartToolGroup() {
+  const last = logEl.lastElementChild;
+  if (last && last.classList.contains('tool-group') && !last.dataset.closed) {
+    return last;
+  }
+  return startToolGroup();
+}
+
+function finalizeToolGroup(group) {
+  if (group) group.dataset.closed = '1';
+}
+
+function updateToolGroupSummary(group) {
+  const body = group.querySelector('.tool-group-body');
+  const tools = [...body.querySelectorAll(':scope > .msg.tool')];
+  const label = group.querySelector('.tool-group-label');
+  const names = group.querySelector('.tool-group-names');
+  const count = tools.length;
+  label.textContent = count === 1 ? '1 tool call' : `${count} tool calls`;
+  const uniq = [];
+  for (const t of tools) {
+    const n = t.querySelector('.tool-name')?.textContent;
+    if (n && !uniq.includes(n)) uniq.push(n);
+    if (uniq.length >= 4) break;
+  }
+  names.textContent = uniq.length ? ' · ' + uniq.join(', ') + (tools.length > uniq.length ? '…' : '') : '';
 }
 
 function appendBubble(role, text, streaming = false, id = null) {
@@ -167,12 +224,15 @@ function setBubbleBody(bodyEl, role, text) {
   }
 }
 
-function appendToolBubble(tc) {
+function appendToolBubble(tc, group) {
+  const target = group ?? getOrStartToolGroup();
+  const groupBody = target.querySelector('.tool-group-body');
   const el = document.createElement('div');
   el.className = 'msg tool';
   el.dataset.toolId = tc.id;
   const details = document.createElement('details');
-  details.open = !tc.result;  // open while pending, collapse once we have a result
+  // open while pending, collapse once we have a result — unless the user toggled "collapse all"
+  details.open = toolsCollapsed ? false : !tc.result;
   const summary = document.createElement('summary');
   const name = document.createElement('span'); name.className = 'tool-name'; name.textContent = tc.name;
   const argHint = document.createElement('span');
@@ -187,7 +247,8 @@ function appendToolBubble(tc) {
   if (tc.result) appendResultSections(body, tc.result);
   details.appendChild(body);
   el.appendChild(details);
-  logEl.appendChild(el);
+  groupBody.appendChild(el);
+  updateToolGroupSummary(target);
   return el;
 }
 
@@ -451,10 +512,127 @@ stopBtn.addEventListener('click', () => {
   ws?.send?.(JSON.stringify({ type: 'cancel', sessionId: activeSessionId }));
 });
 
+
 newSessionBtn.addEventListener('click', () => {
-  const title = prompt('Session title?', 'untitled');
-  if (!title) return;
-  ws.send(JSON.stringify({ type: 'new_session', title }));
+  ws.send(JSON.stringify({ type: 'new_session' }));
 });
+
+// ---------- Import-from-Claude-Code modal ----------
+const importBtn = document.getElementById('import-btn');
+const importModal = document.getElementById('import-modal');
+const importClose = document.getElementById('import-close');
+const importProjectSel = document.getElementById('import-project');
+const importShowAll = document.getElementById('import-show-all');
+const importListEl = document.getElementById('import-list');
+const importSubmit = document.getElementById('import-submit');
+const importStatusEl = document.getElementById('import-status');
+
+let importProjects = [];
+let importCurrentCwd = null;
+
+importBtn.addEventListener('click', openImportModal);
+importClose.addEventListener('click', closeImportModal);
+importModal.addEventListener('click', (e) => { if (e.target === importModal) closeImportModal(); });
+importShowAll.addEventListener('change', renderProjectOptions);
+importProjectSel.addEventListener('change', loadImportSessions);
+importSubmit.addEventListener('click', submitImport);
+
+async function openImportModal() {
+  importModal.hidden = false;
+  importStatusEl.textContent = 'loading projects…';
+  importListEl.innerHTML = '';
+  try {
+    const res = await fetch('/api/history/projects');
+    const data = await res.json();
+    importProjects = data.projects || [];
+    importCurrentCwd = data.currentCwd || null;
+    renderProjectOptions();
+    await loadImportSessions();
+  } catch (err) {
+    importStatusEl.textContent = 'failed to load: ' + err.message;
+  }
+}
+
+function closeImportModal() {
+  importModal.hidden = true;
+}
+
+function renderProjectOptions() {
+  const showAll = importShowAll.checked;
+  const filtered = showAll
+    ? importProjects
+    : importProjects.filter((p) => p.cwd === importCurrentCwd);
+  // If filtering hides everything, fall back to showing all so the modal isn't empty.
+  const list = filtered.length ? filtered : importProjects;
+  importProjectSel.innerHTML = '';
+  for (const p of list) {
+    const opt = document.createElement('option');
+    opt.value = p.slug;
+    opt.textContent = `${p.cwd}  (${p.sessionCount})`;
+    if (p.cwd === importCurrentCwd) opt.selected = true;
+    importProjectSel.appendChild(opt);
+  }
+  if (!filtered.length && importProjects.length) {
+    importStatusEl.textContent = 'no sessions for current cwd; showing all';
+  }
+}
+
+async function loadImportSessions() {
+  const slug = importProjectSel.value;
+  if (!slug) { importListEl.innerHTML = ''; return; }
+  importStatusEl.textContent = 'loading sessions…';
+  importListEl.innerHTML = '';
+  try {
+    const res = await fetch(`/api/history/sessions?slug=${encodeURIComponent(slug)}`);
+    const items = await res.json();
+    importStatusEl.textContent = `${items.length} session(s)`;
+    for (const s of items) {
+      const li = document.createElement('li');
+      if (s.alreadyImported) li.classList.add('disabled');
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = s.id;
+      cb.disabled = !!s.alreadyImported;
+      const wrap = document.createElement('div');
+      wrap.style.flex = '1';
+      const title = document.createElement('div');
+      title.className = 'import-title';
+      title.textContent = s.title;
+      const meta = document.createElement('div');
+      meta.className = 'import-meta';
+      const date = new Date(s.mtime).toLocaleString();
+      meta.textContent = `${s.messageCount} msg · ${date}${s.alreadyImported ? ' · already imported' : ''}`;
+      wrap.appendChild(title);
+      wrap.appendChild(meta);
+      li.appendChild(cb);
+      li.appendChild(wrap);
+      importListEl.appendChild(li);
+    }
+  } catch (err) {
+    importStatusEl.textContent = 'failed: ' + err.message;
+  }
+}
+
+async function submitImport() {
+  const slug = importProjectSel.value;
+  const ids = [...importListEl.querySelectorAll('input[type=checkbox]:checked')].map((c) => c.value);
+  if (!ids.length) { importStatusEl.textContent = 'pick at least one'; return; }
+  importSubmit.disabled = true;
+  importStatusEl.textContent = `importing ${ids.length}…`;
+  try {
+    const res = await fetch('/api/history/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug, ids }),
+    });
+    const data = await res.json();
+    importStatusEl.textContent = `imported ${data.created?.length ?? 0}, skipped ${data.skipped?.length ?? 0}`;
+    await loadImportSessions();
+  } catch (err) {
+    importStatusEl.textContent = 'failed: ' + err.message;
+  } finally {
+    importSubmit.disabled = false;
+  }
+}
 
 connect();

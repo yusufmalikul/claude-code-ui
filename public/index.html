@@ -14,10 +14,36 @@
   <aside id="sidebar">
     <div class="sidebar-head">
       <h2>Sessions</h2>
-      <button id="new-session-btn" title="New session">+</button>
+      <div class="sidebar-actions">
+        <button id="import-btn" title="Import from Claude Code">↓</button>
+        <button id="new-session-btn" title="New session">+</button>
+      </div>
     </div>
     <ul id="session-list"></ul>
   </aside>
+
+  <div id="import-modal" class="modal" hidden>
+    <div class="modal-card">
+      <header class="modal-head">
+        <h3>Import from Claude Code</h3>
+        <button id="import-close" class="icon-btn" title="Close">×</button>
+      </header>
+      <div class="modal-controls">
+        <label>Project:
+          <select id="import-project"></select>
+        </label>
+        <label class="checkbox-inline">
+          <input type="checkbox" id="import-show-all" />
+          Show all projects
+        </label>
+      </div>
+      <ul id="import-list" class="import-list"></ul>
+      <footer class="modal-foot">
+        <span id="import-status" class="muted"></span>
+        <button id="import-submit" type="button">Import selected</button>
+      </footer>
+    </div>
+  </div>
 
   <section id="chat">
     <header>

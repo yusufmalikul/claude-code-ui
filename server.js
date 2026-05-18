@@ -1,11 +1,15 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { spawnClaude } from './claude-adapter.js';
 import { openDb } from './db.js';
 import { SessionManager } from './session-manager.js';
+import { listProjects, listSessionsForSlug, readTranscript } from './claude-history.js';
+
+const AUTO_TITLE_PLACEHOLDER = 'New chat';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 3001);
@@ -39,6 +43,53 @@ app.patch('/api/sessions/:id', async (req, reply) => {
   const updated = sessions.rename(id, title.trim());
   broadcastSessionList();
   return updated;
+});
+
+app.get('/api/history/projects', async () => {
+  const projects = await listProjects();
+  return { projects, currentCwd: DEFAULT_CWD };
+});
+
+app.get('/api/history/sessions', async (req, reply) => {
+  const slug = typeof req.query?.slug === 'string' ? req.query.slug : '';
+  if (!slug || slug.includes('/') || slug.includes('..')) {
+    return reply.code(400).send({ error: 'invalid slug' });
+  }
+  const items = await listSessionsForSlug(slug);
+  return items.map((s) => ({ ...s, alreadyImported: !!sessions.findByClaudeId(s.id) }));
+});
+
+app.post('/api/history/import', async (req, reply) => {
+  const { slug, ids } = req.body ?? {};
+  if (typeof slug !== 'string' || !slug || slug.includes('/') || slug.includes('..')) {
+    return reply.code(400).send({ error: 'invalid slug' });
+  }
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return reply.code(400).send({ error: 'ids required' });
+  }
+  const created = [];
+  const skipped = [];
+  for (const rawId of ids) {
+    const id = String(rawId);
+    if (!/^[a-f0-9-]{8,}$/i.test(id)) { skipped.push({ id, reason: 'bad id' }); continue; }
+    if (sessions.findByClaudeId(id)) { skipped.push({ id, reason: 'already imported' }); continue; }
+    let parsed;
+    try { parsed = await readTranscript(slug, id); }
+    catch (err) { skipped.push({ id, reason: err.message }); continue; }
+    if (parsed.messages.length === 0) { skipped.push({ id, reason: 'empty' }); continue; }
+    const firstUser = parsed.messages.find((m) => m.role === 'user');
+    const firstText = firstUser?.content?.text ?? '';
+    const title = (firstText.replace(/\s+/g, ' ').trim().slice(0, 80)) || 'Imported chat';
+    const sess = sessions.importSession({
+      title,
+      cwd: parsed.cwd || DEFAULT_CWD,
+      claudeId: id,
+      messages: parsed.messages,
+    });
+    created.push(sess);
+  }
+  broadcastSessionList();
+  return { created, skipped };
 });
 
 app.delete('/api/sessions/:id', async (req) => {
@@ -103,12 +154,59 @@ app.register(async (scoped) => {
 });
 
 function handleNewSession(msg, send) {
-  const title = (msg.title || 'untitled').toString().trim() || 'untitled';
+  const rawTitle = (msg.title ?? '').toString().trim();
+  const title = rawTitle || AUTO_TITLE_PLACEHOLDER;
   const cwd = (msg.cwd || DEFAULT_CWD).toString().trim() || DEFAULT_CWD;
   const sess = sessions.create({ title, cwd });
   broadcastSessionList();
   send({ type: 'session_created', session: sess });
   send({ type: 'history', sessionId: sess.id, messages: [] });
+}
+
+// Ask claude (one-shot, no resume) for a short title summarizing the first exchange.
+// Failures are non-fatal — we just leave the placeholder in place.
+function generateTitle({ cwd, userText, assistantText }) {
+  return new Promise((resolve) => {
+    const prompt =
+      'Summarize the following chat exchange as a short title (3-6 words, ' +
+      'no quotes, no trailing punctuation, plain text only). Reply with the ' +
+      'title and nothing else.\n\n' +
+      `User: ${userText.slice(0, 2000)}\n\n` +
+      `Assistant: ${assistantText.slice(0, 2000)}`;
+
+    const child = spawn('claude', ['--print', '--dangerously-skip-permissions'], {
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let done = false;
+    const finish = (val) => { if (!done) { done = true; resolve(val); } };
+    const timer = setTimeout(() => { child.kill('SIGTERM'); finish(null); }, 30000);
+    child.stdout.on('data', (c) => { out += c.toString('utf8'); });
+    child.on('error', () => { clearTimeout(timer); finish(null); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return finish(null);
+      const cleaned = out
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .split('\n').map((l) => l.trim()).filter(Boolean)[0] || '';
+      const trimmed = cleaned.replace(/[.\s]+$/g, '').slice(0, 80);
+      finish(trimmed || null);
+    });
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+async function maybeAutoTitle(sessionId, userText, assistantText) {
+  const sess = sessions.get(sessionId);
+  if (!sess || sess.title !== AUTO_TITLE_PLACEHOLDER) return;
+  const title = await generateTitle({ cwd: sess.cwd, userText, assistantText });
+  if (!title) return;
+  const fresh = sessions.get(sessionId);
+  if (!fresh || fresh.title !== AUTO_TITLE_PLACEHOLDER) return;
+  sessions.rename(sessionId, title);
+  broadcastSessionList();
 }
 
 function handleLoadSession(msg, send) {
@@ -184,6 +282,9 @@ function handleSendMessage(msg, send) {
     .then(() => {
       sessions.addMessage(sessionId, 'assistant', { text: assistantBuffer, tool_calls: toolCalls });
       broadcastSessionList();
+      maybeAutoTitle(sessionId, text, assistantBuffer).catch((err) =>
+        app.log.warn({ err: err.message, sessionId }, 'auto-title failed')
+      );
     })
     .catch((err) => broadcast({ type: 'state', sessionId, state: 'error', error: err.message }))
     .finally(() => { running.delete(sessionId); });

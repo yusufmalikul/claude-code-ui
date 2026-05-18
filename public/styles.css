@@ -52,6 +52,43 @@ body { display: flex; height: 100vh; }
   font-size: 1.1rem; cursor: pointer; padding: 0; line-height: 1;
 }
 .sidebar-head button:hover { background: var(--hover); }
+.sidebar-actions { display: flex; gap: 0.35rem; }
+
+.modal {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal[hidden] { display: none; }
+.modal-card {
+  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; width: min(640px, 92vw); max-height: 80vh;
+  display: flex; flex-direction: column;
+}
+.modal-head, .modal-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--border);
+}
+.modal-foot { border-top: 1px solid var(--border); border-bottom: 0; gap: 0.6rem; }
+.modal-head h3 { margin: 0; font-size: 0.95rem; }
+.modal-controls {
+  display: flex; gap: 1rem; align-items: center;
+  padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--border);
+  font-size: 0.85rem; flex-wrap: wrap;
+}
+.checkbox-inline { display: inline-flex; align-items: center; gap: 0.35rem; }
+.import-list {
+  list-style: none; margin: 0; padding: 0.25rem 0.5rem;
+  overflow-y: auto; flex: 1; min-height: 8rem;
+}
+.import-list li {
+  display: flex; gap: 0.55rem; align-items: flex-start;
+  padding: 0.45rem 0.5rem; border-radius: 4px;
+}
+.import-list li:hover { background: var(--hover); }
+.import-list .import-title { font-size: 0.9rem; line-height: 1.3; }
+.import-list .import-meta { font-size: 0.72rem; color: var(--muted); }
+.import-list li.disabled { opacity: 0.5; }
+.muted { color: var(--muted); font-size: 0.78rem; }
 #session-list { list-style: none; margin: 0; padding: 0.25rem; overflow-y: auto; flex: 1; }
 .session-item {
   padding: 0.5rem 0.6rem; border-radius: 6px; cursor: pointer;
@@ -150,6 +187,23 @@ main {
 }
 @media (prefers-color-scheme: dark) { .msg.tool pre { background: rgba(255,255,255,0.06); } }
 .msg.tool .tool-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+
+/* Tool-group: wraps a run of consecutive tool calls into one collapsible card. */
+.msg.tool-group { background: transparent; padding: 0; border: 0; }
+.msg.tool-group > details { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.msg.tool-group > details > summary {
+  display: flex; align-items: center; gap: 0.4rem; cursor: pointer;
+  padding: 0.45rem 0.7rem; font-size: 0.8rem; color: var(--muted);
+  background: var(--hover);
+  list-style: none;
+}
+.msg.tool-group > details > summary::-webkit-details-marker { display: none; }
+.msg.tool-group > details > summary::before { content: "▸"; transition: transform 0.15s; }
+.msg.tool-group > details[open] > summary::before { transform: rotate(90deg); }
+.msg.tool-group .tool-group-label { font-weight: 600; color: var(--fg); }
+.msg.tool-group .tool-group-names { color: var(--muted); }
+.msg.tool-group .tool-group-body { display: flex; flex-direction: column; gap: 0.4rem; padding: 0.5rem; }
+.msg.tool-group .tool-group-body > .msg.tool { margin: 0; }
 .msg.system { background: transparent; border-style: dashed; color: var(--muted); font-size: 0.8rem; }
 .msg.streaming::after {
   content: "▊"; color: var(--accent); margin-left: 2px;
