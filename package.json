@@ -1,0 +1,13 @@
+{
+  "name": "claude-webui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test:adapter": "node test-adapter.js"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0"
+  }
+}
