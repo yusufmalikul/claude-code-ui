@@ -91,7 +91,21 @@ main {
   color: var(--muted); margin-bottom: 0.25rem;
 }
 .msg.user { background: var(--user-bg); align-self: flex-end; }
-.msg.assistant { background: var(--assistant-bg); }
+.msg.assistant { background: var(--assistant-bg); white-space: normal; }
+.msg.assistant .body > :first-child { margin-top: 0; }
+.msg.assistant .body > :last-child { margin-bottom: 0; }
+.msg.assistant p { margin: 0.4em 0; }
+.msg.assistant pre {
+  margin: 0.5em 0; padding: 0.6em 0.8em; border-radius: 6px;
+  background: rgba(0,0,0,0.05); overflow-x: auto;
+}
+@media (prefers-color-scheme: dark) { .msg.assistant pre { background: rgba(255,255,255,0.06); } }
+.msg.assistant code { font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; }
+.msg.assistant :not(pre) > code { padding: 0.1em 0.3em; background: rgba(0,0,0,0.06); border-radius: 3px; }
+@media (prefers-color-scheme: dark) { .msg.assistant :not(pre) > code { background: rgba(255,255,255,0.08); } }
+.msg.assistant ul, .msg.assistant ol { margin: 0.4em 0; padding-left: 1.5em; }
+.msg.assistant table { border-collapse: collapse; margin: 0.5em 0; }
+.msg.assistant th, .msg.assistant td { border: 1px solid var(--border); padding: 0.3em 0.6em; }
 .msg.tool { background: var(--tool-bg); font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; padding: 0; }
 .msg.tool details { padding: 0.6rem 0.8rem; }
 .msg.tool summary {

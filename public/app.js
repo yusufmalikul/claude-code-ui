@@ -1,5 +1,39 @@
 // Multi-session client. Each session has its own log + in-progress assistant bubble;
 // only the active session is shown, but streams continue in the background for others.
+
+// Configure marked + highlight.js. marked@14 uses an options-object for highlight.
+if (window.marked && window.hljs) {
+  marked.setOptions({
+    gfm: true,
+    breaks: true,
+  });
+  marked.use({
+    renderer: {
+      code(token) {
+        const lang = (token.lang || '').match(/^\S+/)?.[0] ?? '';
+        let html;
+        try {
+          html = lang && hljs.getLanguage(lang)
+            ? hljs.highlight(token.text, { language: lang, ignoreIllegals: true }).value
+            : hljs.highlightAuto(token.text).value;
+        } catch {
+          html = escapeHtml(token.text);
+        }
+        return `<pre><code class="hljs language-${escapeHtml(lang)}">${html}</code></pre>`;
+      },
+    },
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+function renderMarkdown(text) {
+  if (!window.marked) return escapeHtml(text);
+  try { return marked.parse(text); }
+  catch { return escapeHtml(text); }
+}
 const logEl = document.getElementById('log');
 const form = document.getElementById('composer');
 const input = document.getElementById('input');
@@ -64,10 +98,19 @@ function appendBubble(role, text, streaming = false, id = null) {
   const tag = document.createElement('div');
   tag.className = 'role'; tag.textContent = role;
   const body = document.createElement('div');
-  body.className = 'body'; body.textContent = text;
+  body.className = 'body';
+  setBubbleBody(body, role, text);
   el.appendChild(tag); el.appendChild(body);
   logEl.appendChild(el);
   return el;
+}
+
+function setBubbleBody(bodyEl, role, text) {
+  if (role === 'assistant') {
+    bodyEl.innerHTML = renderMarkdown(text || '');
+  } else {
+    bodyEl.textContent = text || '';
+  }
 }
 
 function appendToolBubble(tc) {
@@ -212,7 +255,7 @@ function handleEvent(evt) {
       bubble.text += evt.text;
       if (evt.sessionId === activeSessionId) {
         const el = logEl.querySelector(`[data-msg-id="${bubble.id}"] .body`);
-        if (el) el.textContent = bubble.text;
+        if (el) setBubbleBody(el, 'assistant', bubble.text);
         logEl.scrollTop = logEl.scrollHeight;
       }
       break;
