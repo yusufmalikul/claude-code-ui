@@ -124,6 +124,7 @@ function handleSendMessage(msg, send) {
 
   let assistantBuffer = '';
   const toolCalls = [];
+  const toolCallById = new Map();
 
   const run = spawnClaude({
     message: text,
@@ -143,8 +144,24 @@ function handleSendMessage(msg, send) {
       broadcast({ type: 'token', sessionId, text: t });
     },
     onTool: (t) => {
-      toolCalls.push({ id: t.id, name: t.name, input: t.input });
+      const entry = { id: t.id, name: t.name, input: t.input, result: null };
+      toolCalls.push(entry);
+      toolCallById.set(t.id, entry);
       broadcast({ type: 'tool_start', sessionId, toolUseId: t.id, name: t.name, input: t.input });
+    },
+    onToolResult: (r) => {
+      const entry = toolCallById.get(r.id);
+      if (entry) entry.result = { output: r.output, isError: r.isError, stdout: r.stdout, stderr: r.stderr, isImage: r.isImage };
+      broadcast({
+        type: 'tool_result',
+        sessionId,
+        toolUseId: r.id,
+        output: r.output,
+        isError: r.isError,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        isImage: r.isImage,
+      });
     },
   });
   running.set(sessionId, run);

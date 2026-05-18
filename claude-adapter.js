@@ -16,6 +16,7 @@ import { spawn } from 'node:child_process';
  *   onToken?:   (text) => void        text delta chunks as they stream
  *   onState?:   (state) => void       'requesting' | 'streaming' | 'complete' | 'error'
  *   onTool?:    ({id,name,input}) => void   when assistant emits a tool_use block
+ *   onToolResult?: ({id,output,isError,stdout,stderr,isImage}) => void   when claude returns a tool result
  *   onSession?: (sessionId) => void   fires as soon as session_id is known
  */
 export function spawnClaude(options) {
@@ -28,6 +29,7 @@ export function spawnClaude(options) {
     onToken,
     onState,
     onTool,
+    onToolResult,
     onSession,
   } = options;
 
@@ -76,6 +78,29 @@ export function spawnClaude(options) {
           onState?.('streaming');
         }
         onToken?.(inner.delta.text);
+      }
+      return;
+    }
+
+    // Tool results come back as a synthesized "user" message with tool_result content blocks.
+    if (evt.type === 'user' && evt.message?.content) {
+      for (const block of evt.message.content) {
+        if (block.type === 'tool_result') {
+          const tur = evt.tool_use_result;
+          const payload = {
+            id: block.tool_use_id,
+            output: typeof block.content === 'string'
+              ? block.content
+              : Array.isArray(block.content)
+                ? block.content.map((c) => c?.text ?? '').join('')
+                : '',
+            isError: !!block.is_error,
+            stdout: tur?.stdout,
+            stderr: tur?.stderr,
+            isImage: !!tur?.isImage,
+          };
+          onToolResult?.(payload);
+        }
       }
       return;
     }

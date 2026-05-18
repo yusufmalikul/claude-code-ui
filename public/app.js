@@ -51,7 +51,7 @@ function renderLog() {
   for (const m of state.messages) {
     appendBubble(m.role, m.text, m.streaming, m.id);
     for (const tc of m.tool_calls ?? []) {
-      appendBubble('tool', `→ ${tc.name}(${JSON.stringify(tc.input)})`);
+      appendToolBubble(tc);
     }
   }
   logEl.scrollTop = logEl.scrollHeight;
@@ -69,6 +69,81 @@ function appendBubble(role, text, streaming = false, id = null) {
   logEl.appendChild(el);
   return el;
 }
+
+function appendToolBubble(tc) {
+  const el = document.createElement('div');
+  el.className = 'msg tool';
+  el.dataset.toolId = tc.id;
+  const details = document.createElement('details');
+  details.open = !tc.result;  // open while pending, collapse once we have a result
+  const summary = document.createElement('summary');
+  const name = document.createElement('span'); name.className = 'tool-name'; name.textContent = tc.name;
+  const argHint = document.createElement('span');
+  argHint.textContent = ' ' + summarizeInput(tc.input);
+  const status = document.createElement('span'); status.className = 'tool-status';
+  status.textContent = tc.result ? (tc.result.isError ? 'error' : 'done') : 'running…';
+  if (tc.result?.isError) status.classList.add('error');
+  summary.append(name, argHint, status);
+  details.appendChild(summary);
+  const body = document.createElement('div'); body.className = 'tool-body';
+  body.appendChild(makeSection('input', JSON.stringify(tc.input, null, 2)));
+  if (tc.result) appendResultSections(body, tc.result);
+  details.appendChild(body);
+  el.appendChild(details);
+  logEl.appendChild(el);
+  return el;
+}
+
+function summarizeInput(input) {
+  if (!input || typeof input !== 'object') return '';
+  if (typeof input.command === 'string') return `\`${truncate(input.command, 60)}\``;
+  if (typeof input.file_path === 'string') return truncate(input.file_path, 60);
+  if (typeof input.pattern === 'string') return `/${truncate(input.pattern, 60)}/`;
+  const keys = Object.keys(input);
+  return keys.length ? `{${keys.slice(0, 3).join(', ')}}` : '';
+}
+
+function truncate(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+
+function makeSection(label, text) {
+  const wrap = document.createElement('div');
+  const lab = document.createElement('div'); lab.className = 'tool-label'; lab.textContent = label;
+  const pre = document.createElement('pre'); pre.textContent = text;
+  wrap.append(lab, pre);
+  return wrap;
+}
+
+function appendResultSections(body, result) {
+  if (typeof result.stdout === 'string' && result.stdout) {
+    body.appendChild(makeSection('stdout', result.stdout));
+  }
+  if (typeof result.stderr === 'string' && result.stderr) {
+    body.appendChild(makeSection('stderr', result.stderr));
+  }
+  // Fall back to combined output if stdout/stderr weren't provided.
+  if (result.output && (!result.stdout && !result.stderr)) {
+    body.appendChild(makeSection(result.isError ? 'error' : 'output', result.output));
+  }
+}
+
+function updateToolBubble(tc) {
+  const el = logEl.querySelector(`[data-tool-id="${cssEscape(tc.id)}"]`);
+  if (!el) return;
+  const status = el.querySelector('.tool-status');
+  if (status) {
+    status.textContent = tc.result ? (tc.result.isError ? 'error' : 'done') : 'running…';
+    status.classList.toggle('error', !!tc.result?.isError);
+  }
+  const body = el.querySelector('.tool-body');
+  if (body && tc.result) {
+    // Remove any prior result sections (keep only the leading input section).
+    while (body.children.length > 1) body.removeChild(body.lastChild);
+    appendResultSections(body, tc.result);
+    el.querySelector('details').open = false;
+  }
+}
+
+function cssEscape(s) { return (window.CSS?.escape ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, '\\$&')); }
 
 function selectSession(id) {
   activeSessionId = id;
@@ -144,10 +219,28 @@ function handleEvent(evt) {
     }
     case 'tool_start': {
       const state = getState(evt.sessionId);
-      const tc = { id: evt.toolUseId, name: evt.name, input: evt.input };
+      const tc = { id: evt.toolUseId, name: evt.name, input: evt.input, result: null };
       if (state.openAssistant) state.openAssistant.tool_calls.push(tc);
       if (evt.sessionId === activeSessionId) {
-        appendBubble('tool', `→ ${evt.name}(${JSON.stringify(evt.input)})`);
+        appendToolBubble(tc);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      break;
+    }
+    case 'tool_result': {
+      const state = getState(evt.sessionId);
+      const tc = state.openAssistant?.tool_calls.find((t) => t.id === evt.toolUseId);
+      if (tc) {
+        tc.result = {
+          output: evt.output, isError: evt.isError,
+          stdout: evt.stdout, stderr: evt.stderr, isImage: evt.isImage,
+        };
+      }
+      if (evt.sessionId === activeSessionId) {
+        updateToolBubble({ id: evt.toolUseId, result: {
+          output: evt.output, isError: evt.isError,
+          stdout: evt.stdout, stderr: evt.stderr, isImage: evt.isImage,
+        }});
         logEl.scrollTop = logEl.scrollHeight;
       }
       break;
